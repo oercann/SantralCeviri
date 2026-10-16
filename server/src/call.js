@@ -28,6 +28,16 @@ export const PROMPTS = {
 
 const PIN = process.env.ACCESS_PIN || '';
 
+/** TTS'e gitmeden önce metni telefon diline uydur: +1 ve etiketleri at, numaraları gruplu oku. */
+function speakable(text) {
+  return String(text)
+    .replace(/\[(CALL|HANGUP)[^\]]*\]/g, '')
+    .replace(/\+1\s?(\d{3})\s?(\d{3})\s?(\d{4})/g, '$1 $2 $3')
+    .replace(/\+(\d)/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 export class CallSession extends EventEmitter {
   constructor(ari, userChannel, contact = null) {
     super();
@@ -160,9 +170,14 @@ export class CallSession extends EventEmitter {
       // Anında kısa onay: sessizlik hissi olmasın
       this.say(FILLERS[Math.floor(Math.random() * FILLERS.length)], 'tr');
       const r = await intent(text, allContacts(), this.assistantHistory, (sentence) => {
+        if (/^\s*(\+?1?[\s-]?\d{3}[\s-]?\d{3}[\s-]?\d{4})\s*\.?$/.test(sentence)) return; // çıplak numara: konuşma
         this.emit('transcript', { speaker: 'assistant', type: 'final', text: sentence });
         this.say(sentence, 'tr');
       });
+      if (r.action === 'reply') {
+        const m = /(\+?1?[\s-]?\d{3}[\s-]?\d{3}[\s-]?\d{4})/.exec(r.reply || '');
+        if (m && /ara|arıyorum|bağlanıyorum/i.test(r.reply)) r.action = 'call', r.number = m[1];
+      }
       this.log('Komut:', text, '→', JSON.stringify(r));
       if (r.action === 'call' && r.number) {
         const c = findByName(String(r.number));
@@ -263,6 +278,7 @@ export class CallSession extends EventEmitter {
 
   /** Tercüman sesi — ortak köprüye, sırayla. */
   say(text, lang) {
+    text = speakable(text);
     const run = async () => {
       if (!this.main.rtp || this.ended) return;
       try {
