@@ -141,7 +141,7 @@ export class CallSession extends EventEmitter {
       app: config.ari.app,
       channelId: mediaId,
       external_host: `${config.rtp.host}:${port}`,
-      format: 'slin16',
+      format: 'ulaw',
       encapsulation: 'rtp',
       transport: 'udp',
       connection_type: 'client',

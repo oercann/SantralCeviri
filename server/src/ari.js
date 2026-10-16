@@ -77,7 +77,7 @@ export class Ari extends EventEmitter {
     return this.request('POST', '/channels/externalMedia', {
       app: this.app,
       external_host: `${host}:${port}`,
-      format: 'slin16',
+      format: 'ulaw',
       encapsulation: 'rtp',
       transport: 'udp',
       connection_type: 'client',

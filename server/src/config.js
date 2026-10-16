@@ -28,7 +28,7 @@ export const config = {
   rtp: {
     host: env('RTP_HOST', '127.0.0.1'),
     portBase: Number(env('RTP_PORT_BASE', 40000)),
-    sampleRate: 16000, // Asterisk slin16
+    sampleRate: 8000, // Asterisk ulaw (G.711)
   },
 };
 
