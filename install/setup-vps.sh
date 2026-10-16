@@ -11,10 +11,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 echo "==> Paketler"
 apt-get update -y
-apt-get install -y asterisk curl ufw git unzip sox
+apt-get install -y asterisk curl ufw git unzip sox rsync ca-certificates gnupg
 
 echo "==> Node.js 20"
-if ! command -v node >/dev/null || [[ "$(node -v | cut -c2-3)" -lt 20 ]]; then
+if ! command -v npm >/dev/null || ! command -v node >/dev/null || [[ "$(node -v | cut -c2-3)" -lt 20 ]]; then
+  apt-get remove -y nodejs npm 2>/dev/null || true
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
 fi
