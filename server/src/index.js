@@ -17,7 +17,10 @@ let pendingTarget = null;      // PWA'dan arama öncesi girilen numara
 function attach(s) {
   session = s;
   s.on('status', (st) => web.broadcast({ type: 'status', id: s.id, state: s.state, ...st }));
-  s.on('transcript', (t) => web.broadcast({ type: 'transcript', ...t, at: Date.now() }));
+  s.on('transcript', (t) => {
+    if (t.type === 'final' || t.type === 'translated') console.log(`[${s.id}] ${t.speaker} ${t.type === 'translated' ? '⇒' : ':'} ${t.text}`);
+    web.broadcast({ type: 'transcript', ...t, at: Date.now() });
+  });
   s.on('ended', (e) => {
     web.broadcast({ type: 'ended', reason: e.reason });
     if (session === s) session = null;
