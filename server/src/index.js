@@ -2,7 +2,8 @@
 import { config, assertConfig, normalizeNumber } from './config.js';
 import { Ari } from './ari.js';
 import { Web } from './web.js';
-import { CallSession } from './call.js';
+import { CallSession, PROMPTS } from './call.js';
+import { prewarm } from './openai.js';
 
 assertConfig();
 
@@ -65,7 +66,7 @@ ari.on('StasisEnd', (ev) => {
 
 ari.on('ChannelDestroyed', (ev) => {
   if (session && ev.channel.id === session.remote.channel?.id && session.state === 'ringing') {
-    session.say(session.user, 'Karşı taraf cevap vermedi.').then(() => session.end('no-answer'));
+    session.say(session.user, PROMPTS.noAnswer).then(() => session.end('no-answer'));
   }
 });
 
@@ -105,4 +106,5 @@ process.on('unhandledRejection', (e) => console.error('unhandledRejection', e));
 
 ari.connect();
 web.listen();
+prewarm(Object.entries(PROMPTS).map(([k, text]) => ({ text, lang: k === 'remoteIntro' ? 'en' : 'tr' })));
 console.log('Çeviri Asistanı başladı. DID:', config.trunk.myDid);

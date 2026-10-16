@@ -3,7 +3,19 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { config, normalizeNumber } from './config.js';
 import { RtpLeg, allocPort } from './rtp.js';
-import { LiveTranscriber, translate, speak } from './openai.js';
+import { LiveTranscriber, translate, speakStream } from './openai.js';
+
+export const PROMPTS = {
+  pin: PROMPTS.pin,
+  badPin: PROMPTS.badPin,
+  badPinFinal: PROMPTS.badPinFinal,
+  number: PROMPTS.number,
+  dialing: PROMPTS.dialing,
+  failed: PROMPTS.failed,
+  connected: PROMPTS.connected,
+  noAnswer: 'Karşı taraf cevap vermedi.',
+  remoteIntro: "Hello, this is a live interpreter line. The caller speaks Turkish; you will hear their words in English. Please speak normally and pause briefly between sentences.",
+};
 
 const PIN = process.env.ACCESS_PIN || '';
 
@@ -32,12 +44,11 @@ export class CallSession extends EventEmitter {
   // ---------- Kurulum ----------
   async start() {
     this.log('Gelen çağrı, bacak kuruluyor');
-    await this.ari.play(this.user.channel.id, 'sound:beep').catch((e) => this.log('beep hatası', e.message));
     await this.setupLeg(this.user);
     this.log('Bacak hazır, RTP port', this.user.rtp.port);
     this.setState('auth');
     if (PIN) {
-      await this.say(this.user, 'Merhaba. Lütfen PIN kodunuzu girin.');
+      await this.say(this.user, PROMPTS.pin);
       this.dtmf = '';
       this.awaitDtmf = (digits) => this.checkPin(digits);
     } else {
@@ -52,18 +63,18 @@ export class CallSession extends EventEmitter {
     } else {
       this.pinTries = (this.pinTries || 0) + 1;
       if (this.pinTries >= 3) {
-        await this.say(this.user, 'Hatalı PIN. Görüşme sonlandırılıyor.');
+        await this.say(this.user, PROMPTS.badPinFinal);
         return this.end('bad-pin');
       }
       this.dtmf = '';
-      await this.say(this.user, 'Hatalı PIN, tekrar deneyin.');
+      await this.say(this.user, PROMPTS.badPin);
     }
   }
 
   async askTarget() {
     this.setState('dialing-prompt');
     if (this.pendingTarget) return this.dial(this.pendingTarget);
-    await this.say(this.user, 'Aramak istediğiniz numarayı girin ve kare tuşuna basın.');
+    await this.say(this.user, PROMPTS.number);
     this.dtmf = '';
     this.awaitDtmf = (digits) => this.dial(digits);
   }
@@ -100,7 +111,7 @@ export class CallSession extends EventEmitter {
     this.target = n;
     this.setState('ringing');
     this.emit('status', { target: n });
-    await this.say(this.user, 'Aranıyor. Karşı taraf açınca Türkçe konuşmaya başlayabilirsiniz.');
+    await this.say(this.user, PROMPTS.dialing);
     const chanId = `remote-${this.id}`;
     this.remote.channel = { id: chanId };
     try {
@@ -114,7 +125,7 @@ export class CallSession extends EventEmitter {
       });
     } catch (e) {
       this.log('Arama başarısız', e.message);
-      await this.say(this.user, 'Arama yapılamadı.');
+      await this.say(this.user, PROMPTS.failed);
       return this.end('originate-failed');
     }
   }
@@ -125,7 +136,8 @@ export class CallSession extends EventEmitter {
     await this.setupLeg(this.remote);
     this.setState('connected');
     this.emit('status', { connected: true });
-    this.say(this.user, 'Bağlandı.');
+    this.say(this.user, PROMPTS.connected);
+    await this.say(this.remote, PROMPTS.remoteIntro, 'en');
   }
 
   async setupLeg(leg) {
@@ -178,8 +190,7 @@ export class CallSession extends EventEmitter {
       this.history.push({ src: text, dst: translated, direction });
       this.emit('transcript', { speaker, type: 'translated', text: translated, original: text });
       if (toLeg.rtp && this.state === 'connected') {
-        const pcm = await speak(translated, toLeg.lang);
-        toLeg.rtp.send(pcm);
+        await speakStream(translated, toLeg.lang, (pcm) => toLeg.rtp.send(pcm));
       }
     } catch (e) {
       this.log('Çeviri/TTS hatası', e.message);
@@ -188,14 +199,14 @@ export class CallSession extends EventEmitter {
   }
 
   /** Sisteme ait Türkçe/İngilizce uyarı sesi çal. */
-  async say(leg, text) {
+  async say(leg, text, lang = leg.lang) {
     if (!leg.rtp) return;
     try {
       const t0 = Date.now();
-      const pcm = await speak(text, leg.lang);
-      this.log('TTS', pcm.length, 'bayt', Date.now() - t0, 'ms →', text.slice(0, 30));
-      leg.rtp.send(pcm);
-      await new Promise((r) => setTimeout(r, leg.rtp.pendingMs + 200));
+      let first = 0;
+      await speakStream(text, lang, (pcm) => { if (!first) first = Date.now() - t0; leg.rtp.send(pcm); });
+      this.log('TTS ilk ses', first, 'ms →', text.slice(0, 30));
+      await new Promise((r) => setTimeout(r, leg.rtp.pendingMs + 100));
     } catch (e) {
       this.log('say hatası', e.message);
     }

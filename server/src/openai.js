@@ -39,7 +39,7 @@ export class LiveTranscriber extends EventEmitter {
                   type: 'server_vad',
                   threshold: 0.5,
                   prefix_padding_ms: 300,
-                  silence_duration_ms: 600,
+                  silence_duration_ms: 400,
                 },
                 noise_reduction: { type: 'far_field' },
               },
@@ -124,8 +124,9 @@ export async function translate(text, direction, context = []) {
   return (j.choices?.[0]?.message?.content || '').trim();
 }
 
-/** Seslendirme → PCM16 @16k (Asterisk'e hazır). */
-export async function speak(text, lang) {
+const ttsCache = new Map(); // sabit anonslar
+
+async function ttsRequest(text, lang) {
   const voice = lang === 'en' ? config.openai.voiceEn : config.openai.voiceTr;
   const res = await fetch('https://api.openai.com/v1/audio/speech', {
     method: 'POST',
@@ -135,13 +136,62 @@ export async function speak(text, lang) {
       voice,
       input: text,
       response_format: 'pcm',
-      speed: 1.0,
+      speed: 1.05,
       instructions: lang === 'en'
-        ? 'Clear, calm, friendly phone voice.'
+        ? 'Clear, calm, friendly phone voice. Natural pacing.'
         : 'Sakin, net, doğal bir telefon sesi.',
     }),
   });
   if (!res.ok) throw new Error('TTS hatası ' + res.status + ' ' + (await res.text()));
-  const pcm24k = Buffer.from(await res.arrayBuffer());
-  return resample(pcm24k, OAI_RATE, config.rtp.sampleRate);
+  return res;
+}
+
+/**
+ * Akışlı seslendirme: PCM24k parçaları geldikçe 8k'ya çevirip onPcm(pcm) ile verir.
+ * Çıktı aynı zamanda tam PCM olarak döner (cache için).
+ */
+export async function speakStream(text, lang, onPcm) {
+  const cached = ttsCache.get(lang + '|' + text);
+  if (cached) { onPcm(cached); return cached; }
+  const res = await ttsRequest(text, lang);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let pending = Buffer.alloc(0);
+  const CHUNK = 4800; // 100 ms @ 24 kHz
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pending = Buffer.concat([pending, Buffer.from(value)]);
+    while (pending.length >= CHUNK) {
+      const part = pending.subarray(0, CHUNK);
+      pending = pending.subarray(CHUNK);
+      const pcm = resample(part, OAI_RATE, config.rtp.sampleRate);
+      chunks.push(pcm);
+      onPcm(pcm);
+    }
+  }
+  if (pending.length >= 2) {
+    const pcm = resample(pending.subarray(0, pending.length & ~1), OAI_RATE, config.rtp.sampleRate);
+    chunks.push(pcm);
+    onPcm(pcm);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** Seslendirme → PCM16 (Asterisk'e hazır), tamamı bir kerede. */
+export async function speak(text, lang) {
+  const parts = [];
+  await speakStream(text, lang, (p) => parts.push(p));
+  return Buffer.concat(parts);
+}
+
+/** Sabit anonsları önceden üret (ilk çağrıda bekleme olmasın). */
+export async function prewarm(list) {
+  for (const { text, lang } of list) {
+    try {
+      const pcm = await speak(text, lang);
+      ttsCache.set(lang + '|' + text, pcm);
+    } catch (e) { console.error('prewarm hatası:', e.message); }
+  }
+  console.log('Anonslar hazır:', ttsCache.size);
 }
