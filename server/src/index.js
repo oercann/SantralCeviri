@@ -30,7 +30,7 @@ ari.on('connected', () => console.log('ARI bağlı'));
 ari.on('StasisStart', async (ev) => {
   const ch = ev.channel;
   const [kind, arg] = ev.args || [];
-  if (ch.id.startsWith('media-')) return; // ExternalMedia kanalı, bridge'e biz ekliyoruz
+  if (ch.id.startsWith('media-') || ch.id.startsWith('snoop-') || kind === 'snoop') return; // yardımcı kanallar
 
   if (kind === 'inbound') {
     const caller = normalizeNumber(arg || ch.caller?.number);
@@ -64,12 +64,15 @@ ari.on('StasisEnd', (ev) => {
   if (!session) return;
   const id = ev.channel.id;
   if (id === session.user.channel.id) session.end('user-hangup');
-  else if (id === session.remote.channel?.id && session.state !== 'ended') session.end('remote-hangup');
+  else if (id === session.remote.channel?.id && session.state !== 'ended') {
+    // Karşı taraf kapattı: Onur'a haber ver, sonra bitir
+    session.say(PROMPTS.remoteHangup, 'tr').then(() => session.end('remote-hangup'));
+  }
 });
 
 ari.on('ChannelDestroyed', (ev) => {
   if (session && ev.channel.id === session.remote.channel?.id && session.state === 'ringing') {
-    session.say(session.user, PROMPTS.noAnswer).then(() => session.end('no-answer'));
+    session.say(PROMPTS.noAnswer, 'tr').then(() => session.end('no-answer'));
   }
 });
 
