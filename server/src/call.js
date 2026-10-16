@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events';
 import { config, normalizeNumber } from './config.js';
 import { RtpLeg, allocPort } from './rtp.js';
 import { speakStream } from './openai.js';
-import { RealtimeSession, ROLES, ASSISTANT_TOOLS } from './realtime.js';
+import { RealtimeSession, ROLES, ASSISTANT_TOOLS, webSearch } from './realtime.js';
 import { allContacts, findByName } from './contacts.js';
 
 export const PROMPTS = {
@@ -120,6 +120,14 @@ export class CallSession extends EventEmitter {
       } else if (name === 'hangup') {
         a.toolResult(callId, { ok: true });
         setTimeout(() => this.end('user-bye'), 1500);
+      } else if (name === 'web_search') {
+        try {
+          const answer = await webSearch(String(args.query || ''));
+          this.log('Arama sonucu:', answer.slice(0, 120));
+          a.toolResult(callId, { ok: true, answer });
+        } catch (e) {
+          a.toolResult(callId, { ok: false, error: e.message });
+        }
       }
     });
     this.assistant = a;

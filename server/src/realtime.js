@@ -15,10 +15,11 @@ export const ROLES = {
 Everything you hear is spoken in ${src}. Immediately say the same thing in ${dst}, in first person, with the same tone and meaning. Keep names, numbers, addresses and times exact.
 Rules: output ONLY the interpretation. Never answer questions, never add comments, never explain, never greet, never mention that you are an interpreter. If the audio is silence or noise, say nothing.`,
 
-  assistant: (contacts) => `Sen Türkçe konuşan kişisel bir sesli asistansın; telefonda konuşuyorsun. Kısa, doğal ve samimi konuş (en fazla 2 cümle).
-Yapabildiklerin: bir numarayı ya da rehberdeki kişiyi aramak (call_number aracı), görüşmeyi kapatmak (hangup aracı) ve her türlü soruya genel bilginle cevap vermek.
+  assistant: (contacts) => `Sen Türkçe konuşan kişisel bir sesli asistansın; telefonda konuşuyorsun. Kısa, doğal ve samimi konuş (en fazla 2-3 cümle).
+Şu an: ${new Date().toLocaleString('tr-TR', { timeZone: 'America/New_York', dateStyle: 'full', timeStyle: 'short' })} (New Jersey saati).
+Yapabildiklerin: bir numarayı ya da rehberdeki kişiyi aramak (call_number aracı), görüşmeyi kapatmak (hangup aracı), güncel bilgi için internette arama (web_search aracı: hava durumu, haber, trafik, fiyat, açılış saatleri, güncel her şey) ve her türlü soruya cevap vermek.
+Güncel/değişken bilgi gerekiyorsa tahmin etme, web_search çağır; önce "bakıyorum" gibi kısa bir şey söyleyebilirsin.
 Kullanıcı birini aramak isterse hemen call_number aracını çağır; rehberden bahsetme, numara rehberde yoksa söyleneni ara. ABD numaralarını +1 ile ver.
-Canlı veri (hava, haber, trafik) için erişimin yok, kısaca söyle.
 Rehber:
 ${contacts.map((c) => `${c.name}: ${c.number}`).join('\n') || '(boş)'}`,
 };
@@ -157,4 +158,27 @@ export const ASSISTANT_TOOLS = [
     parameters: { type: 'object', properties: { number: { type: 'string', description: 'E.164, ör. +19085551234' }, name: { type: 'string', description: 'Rehberdeki isim (opsiyonel)' } }, required: ['number'] },
   },
   { type: 'function', name: 'hangup', description: 'Görüşmeyi kapat.', parameters: { type: 'object', properties: {} } },
+  {
+    type: 'function',
+    name: 'web_search',
+    description: 'İnternette güncel bilgi ara (hava durumu, haber, trafik, fiyat, saatler, güncel olaylar).',
+    parameters: { type: 'object', properties: { query: { type: 'string', description: 'Arama sorusu, konum dahil (ör. "Caldwell NJ hava durumu bugün")' } }, required: ['query'] },
+  },
 ];
+
+/** OpenAI Responses API + web_search ile kısa, Türkçe cevap. */
+export async function webSearch(query) {
+  const res = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.openai.key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.SEARCH_MODEL || 'gpt-4.1-mini',
+      tools: [{ type: 'web_search', user_location: { type: 'approximate', country: 'US', region: 'New Jersey', city: 'Caldwell' } }],
+      input: `Soru: ${query}\nİnternette ara ve Türkçe, en fazla 3 kısa cümleyle, telefonda okunacak şekilde cevap ver. Kaynak linki yazma.`,
+    }),
+  });
+  if (!res.ok) throw new Error('Arama hatası ' + res.status + ' ' + (await res.text()).slice(0, 200));
+  const j = await res.json();
+  const text = j.output_text || (j.output || []).flatMap((o) => o.content || []).filter((c) => c.type === 'output_text').map((c) => c.text).join(' ');
+  return (text || 'Sonuç bulunamadı.').trim();
+}
