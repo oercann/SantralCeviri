@@ -242,9 +242,9 @@ export class CallSession extends EventEmitter {
     await this.ari.addToBridge(this.main.bridge.id, channel.id);
     await this.setupSnoop(this.user);
     await this.setupSnoop(this.remote);
-    this.user.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('Turkish', 'English'), label: 'TR→EN' });
+    this.user.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('Turkish', 'English'), label: 'TR→EN', src: 'Turkish', dst: 'English' });
     this.pipe(this.user.interp, 'user');
-    this.remote.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('English', 'Turkish'), label: 'EN→TR' });
+    this.remote.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('English', 'Turkish'), label: 'EN→TR', src: 'English', dst: 'Turkish' });
     this.pipe(this.remote.interp, 'remote');
     this.setState('connected');
     this.emit('status', { connected: true });

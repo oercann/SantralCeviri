@@ -32,9 +32,10 @@ export class RealtimeSession extends EventEmitter {
    * @param {Array} [o.tools]
    * @param {string} [o.label]
    */
-  constructor({ role, instructions, tools = [], label = role }) {
+  constructor({ role, instructions, tools = [], label = role, src = null, dst = null }) {
     super();
     this.role = role;
+    this.src = src; this.dst = dst;
     this.instructions = instructions;
     this.tools = tools;
     this.label = label;
@@ -66,7 +67,7 @@ export class RealtimeSession extends EventEmitter {
                 threshold: 0.55,
                 prefix_padding_ms: 250,
                 silence_duration_ms: this.role === 'interpreter' ? 450 : 500,
-                create_response: true,
+                create_response: this.role !== 'interpreter', // tercümanda cevabı biz tetikleriz
                 interrupt_response: this.role === 'assistant',
               },
             },
@@ -86,6 +87,9 @@ export class RealtimeSession extends EventEmitter {
       switch (ev.type) {
         case 'input_audio_buffer.speech_started':
           this.emit('speech_started'); break;
+        case 'input_audio_buffer.committed':
+          if (this.role === 'interpreter') this._interpretTurn();
+          break;
         case 'conversation.item.input_audio_transcription.completed':
           if (ev.transcript?.trim()) this.emit('heard', ev.transcript.trim()); break;
         case 'response.created':
@@ -129,6 +133,18 @@ export class RealtimeSession extends EventEmitter {
   }
   _append(buf) {
     this.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: buf.toString('base64') }));
+  }
+
+  /** Tercüman: az önce biten konuşmayı, sadece çeviri olarak söylet. */
+  _interpretTurn() {
+    if (!this.ready) return;
+    this.ws.send(JSON.stringify({
+      type: 'response.create',
+      response: {
+        instructions: `Interpret ONLY the ${this.src} utterance that was just spoken into ${this.dst}, first person, same meaning, nothing added. Do not answer it, do not comment, do not ask anything, do not greet. If it was not ${this.src} speech, or was silence/noise, output nothing at all.`,
+        max_output_tokens: 300,
+      },
+    }));
   }
 
   /** Araç sonucunu bildir ve konuşmaya devam ettir. */
