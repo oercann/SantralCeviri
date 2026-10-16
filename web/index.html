@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Çeviri Asistanı</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">Çeviri Asistanı</div>
+    <div id="conn" class="pill off">bağlı değil</div>
+  </header>
+
+  <section id="setup" class="card">
+    <label>Sunucu adresi</label>
+    <input id="server" placeholder="https://ceviri.ornek.com" autocapitalize="off">
+    <label>Erişim anahtarı</label>
+    <input id="token" type="password" placeholder="WEB_TOKEN">
+    <button id="save" class="primary">Bağlan</button>
+  </section>
+
+  <section id="dialer" class="card hidden">
+    <label>Aranacak numara (ABD)</label>
+    <input id="number" type="tel" inputmode="tel" placeholder="(201) 555 0123">
+    <button id="dial" class="primary">Numarayı Hazırla</button>
+    <p class="hint" id="hint"></p>
+    <div class="row">
+      <a id="callme" class="button" href="#">Cebimden Ara</a>
+      <button id="hangup" class="danger">Kapat</button>
+    </div>
+    <div id="state" class="state">Beklemede</div>
+  </section>
+
+  <section id="transcript" class="card hidden">
+    <div class="legend"><span class="me">Sen</span><span class="them">Karşı taraf</span></div>
+    <div id="lines"></div>
+  </section>
+
+  <section id="typebox" class="hidden">
+    <input id="typed" placeholder="Yazıp gönder: karşı tarafa İngilizce okunur">
+    <button id="send">Gönder</button>
+  </section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
