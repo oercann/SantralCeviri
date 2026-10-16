@@ -8,7 +8,7 @@ import { pcmToUlaw, ulawToPcm } from './audio.js';
 const FRAME_MS = 20;
 const FRAME_SAMPLES = (config.rtp.sampleRate * FRAME_MS) / 1000; // 320
 const FRAME_BYTES = FRAME_SAMPLES * 2; // PCM16 bayt (ulaw'da 1 bayt/örnek)
-const PREROLL_BYTES = (config.rtp.sampleRate * 2 * 400) / 1000; // 400 ms ön tampon
+const PREROLL_BYTES = (config.rtp.sampleRate * 2 * 300) / 1000; // 300 ms ön tampon
 
 let nextPort = config.rtp.portBase;
 export function allocPort() {

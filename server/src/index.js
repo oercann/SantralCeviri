@@ -3,8 +3,8 @@ import { config, assertConfig, normalizeNumber } from './config.js';
 import { Ari } from './ari.js';
 import { Web } from './web.js';
 import { CallSession, PROMPTS } from './call.js';
-import { prewarm, FILLERS } from './openai.js';
-import { loadContacts, findByNumber } from './contacts.js';
+import { prewarm } from './openai.js';
+import { loadContacts, findByNumber, allContacts } from './contacts.js';
 
 assertConfig();
 loadContacts();
@@ -70,13 +70,13 @@ ari.on('StasisEnd', (ev) => {
   if (id === session.user.channel.id) session.end('user-hangup');
   else if (id === session.remote.channel?.id && session.state !== 'ended') {
     // Karşı taraf kapattı: Onur'a haber ver, sonra bitir
-    session.say(PROMPTS.remoteHangup, 'tr').then(() => session.end('remote-hangup'));
+    session.say(session.user, PROMPTS.remoteHangup).then(() => session.end('remote-hangup'));
   }
 });
 
 ari.on('ChannelDestroyed', (ev) => {
   if (session && ev.channel.id === session.remote.channel?.id && session.state === 'ringing') {
-    session.say(PROMPTS.noAnswer, 'tr').then(() => session.end('no-answer'));
+    session.say(session.user, PROMPTS.noAnswer).then(() => session.end('no-answer'));
   }
 });
 
@@ -116,5 +116,5 @@ process.on('unhandledRejection', (e) => console.error('unhandledRejection', e));
 
 ari.connect();
 web.listen();
-prewarm([...Object.entries(PROMPTS).map(([k, text]) => ({ text, lang: k === 'remoteIntro' ? 'en' : 'tr' })), ...FILLERS.map((text) => ({ text, lang: 'tr' }))]);
+prewarm([...Object.entries(PROMPTS).map(([k, text]) => ({ text, lang: k === 'remoteIntro' ? 'en' : 'tr' })), ...allContacts().filter((c) => c.trusted).map((c) => ({ text: `Merhaba ${c.name}.`, lang: 'tr' }))]);
 console.log('Çeviri Asistanı başladı. DID:', config.trunk.myDid);
