@@ -257,10 +257,13 @@ export class CallSession extends EventEmitter {
       try {
         const t0 = Date.now();
         let first = 0;
+        this.main.rtp.beginUtterance();
         await speakStream(text, lang, (pcm) => { if (!first) first = Date.now() - t0; this.main.rtp.send(pcm); });
+        this.main.rtp.endUtterance();
         this.log('TTS', lang, first + 'ms →', text.slice(0, 40));
         await new Promise((r) => setTimeout(r, this.main.rtp.pendingMs + 60));
       } catch (e) {
+        this.main.rtp?.endUtterance();
         this.log('say hatası', e.message);
       }
     };

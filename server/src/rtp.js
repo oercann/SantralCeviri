@@ -1,5 +1,6 @@
 // Asterisk ExternalMedia ile RTP alışverişi (ulaw 8 kHz; içeride PCM16 kullanılır)
 import dgram from 'node:dgram';
+import { performance } from 'node:perf_hooks';
 import { EventEmitter } from 'node:events';
 import { config } from './config.js';
 import { pcmToUlaw, ulawToPcm } from './audio.js';
@@ -7,6 +8,7 @@ import { pcmToUlaw, ulawToPcm } from './audio.js';
 const FRAME_MS = 20;
 const FRAME_SAMPLES = (config.rtp.sampleRate * FRAME_MS) / 1000; // 320
 const FRAME_BYTES = FRAME_SAMPLES * 2; // PCM16 bayt (ulaw'da 1 bayt/örnek)
+const PREROLL_BYTES = (config.rtp.sampleRate * 2 * 400) / 1000; // 400 ms ön tampon
 
 let nextPort = config.rtp.portBase;
 export function allocPort() {
@@ -35,6 +37,10 @@ export class RtpLeg extends EventEmitter {
     this.timer = null;
     this.closed = false;
     this.sent = 0;
+    this.open = false;
+    this.playing = false;
+    this.underruns = 0;
+    this.nextAt = 0;
 
     this.sock.on('message', (msg, rinfo) => {
       if (msg.length < 12) return;
@@ -57,16 +63,31 @@ export class RtpLeg extends EventEmitter {
     this.sock.bind(port, config.rtp.host);
   }
 
-  /** PCM16 @16k gönderim kuyruğuna ekle. */
+  /** Bir cümle/akış başlıyor: ön tampon dolana kadar çalma. */
+  beginUtterance() { this.open = true; }
+  /** Akış bitti: kalan ne varsa çal. */
+  endUtterance() { this.open = false; this._maybeStart(); }
+
+  /** PCM16 (8 kHz) gönderim kuyruğuna ekle. */
   send(pcm) {
     if (this.closed) return;
     this.queue = Buffer.concat([this.queue, pcm]);
-    if (!this.timer) this.timer = setInterval(() => this._tick(), FRAME_MS);
+    this._maybeStart();
+  }
+
+  _maybeStart() {
+    if (this.playing || this.queue.length < FRAME_BYTES) return;
+    const enough = !this.open || this.queue.length >= PREROLL_BYTES;
+    if (!enough) return;
+    this.playing = true;
+    this.nextAt = performance.now();
+    if (!this.timer) this.timer = setInterval(() => this._tick(), 5);
   }
 
   /** Kuyruğu boşalt (kullanıcı sözünü kestiğinde). */
   flush() {
     this.queue = Buffer.alloc(0);
+    this.playing = false;
   }
 
   get pendingMs() {
@@ -74,15 +95,29 @@ export class RtpLeg extends EventEmitter {
   }
 
   _tick() {
-    if (!this.peer || this.queue.length < FRAME_BYTES) {
-      if (this.queue.length === 0 && this.timer) {
-        clearInterval(this.timer);
-        this.timer = null;
-        console.log(`RTP port ${this.port}: kuyruk bitti, toplam ${this.sent} kare gönderildi → ${this.peer?.address}:${this.peer?.port} pt=${this.pt}`);
+    if (!this.playing) {
+      if (!this.open && this.queue.length < FRAME_BYTES) {
+        clearInterval(this.timer); this.timer = null;
+        console.log(`RTP port ${this.port}: kuyruk bitti, toplam ${this.sent} kare gönderildi → ${this.peer?.address}:${this.peer?.port} pt=${this.pt} underrun=${this.underruns}`);
         this.emit('drained');
       }
       return;
     }
+    const now = performance.now();
+    let budget = 4; // geç kalınmışsa en fazla 4 kare yetiştir
+    while (now >= this.nextAt && budget-- > 0) {
+      if (!this.peer || this.queue.length < FRAME_BYTES) {
+        // Kaynak yetişemedi: duraklat, ön tampon dolunca devam
+        this.playing = false;
+        if (this.open) this.underruns++;
+        return;
+      }
+      this._sendFrame();
+      this.nextAt += FRAME_MS;
+    }
+  }
+
+  _sendFrame() {
     const payload = pcmToUlaw(this.queue.subarray(0, FRAME_BYTES));
     this.queue = this.queue.subarray(FRAME_BYTES);
     const hdr = Buffer.alloc(12);
