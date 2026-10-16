@@ -1,0 +1,6 @@
+{
+  // Cloudflare Workers — sadece web/ klasörünü statik olarak yayınlar
+  "name": "santralceviri",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./web", "not_found_handling": "404-page" }
+}
