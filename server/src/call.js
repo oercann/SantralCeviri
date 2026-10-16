@@ -16,7 +16,7 @@ export const PROMPTS = {
   badPin: 'Hatalı PIN, tekrar deneyin.',
   badPinFinal: 'Hatalı PIN. Görüşme sonlandırılıyor.',
   number: 'Kimi arayalım? İsmi veya numarayı söyleyebilir ya da tuşlayıp kare tuşuna basabilirsiniz.',
-  notFound: 'Bu kişiyi rehberde bulamadım.',
+  notFound: 'Numarayı anlayamadım. Tekrar söyler ya da tuşlar mısınız?',
   bye: 'Görüşmek üzere.',
   dialing: 'Aranıyor. Karşı taraf açınca Türkçe konuşmaya başlayabilirsiniz.',
   failed: 'Arama yapılamadı.',
@@ -163,6 +163,7 @@ export class CallSession extends EventEmitter {
 
   /** Jarvis modu: Türkçe sesli komut / soru. */
   async handleCommand(text) {
+    if (this.dtmf || Date.now() < (this.keypadUntil || 0)) return; // tuşlama sürüyor, STT'yi yok say
     this.emit('transcript', { speaker: 'user', type: 'final', text });
     if (this.busy) return;
     this.busy = true;
