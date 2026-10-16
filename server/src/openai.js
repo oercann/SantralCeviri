@@ -22,31 +22,32 @@ export class LiveTranscriber extends EventEmitter {
 
   connect() {
     this.ws = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', {
-      headers: {
-        Authorization: `Bearer ${config.openai.key}`,
-        'OpenAI-Beta': 'realtime=v1',
-      },
+      headers: { Authorization: `Bearer ${config.openai.key}` },
     });
     this.ws.on('open', () => {
+      // GA Realtime API (transcription oturumu)
       this.ws.send(
         JSON.stringify({
-          type: 'transcription_session.update',
+          type: 'session.update',
           session: {
-            input_audio_format: 'pcm16',
-            input_audio_transcription: {
-              model: config.openai.stt,
-              language: this.language,
+            type: 'transcription',
+            audio: {
+              input: {
+                format: { type: 'audio/pcm', rate: OAI_RATE },
+                transcription: { model: config.openai.stt, language: this.language },
+                turn_detection: {
+                  type: 'server_vad',
+                  threshold: 0.5,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 600,
+                },
+                noise_reduction: { type: 'far_field' },
+              },
             },
-            turn_detection: {
-              type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 600,
-            },
-            input_audio_noise_reduction: { type: 'far_field' },
           },
         })
       );
+      this.fails = 0;
       this.ready = true;
       for (const b of this.pending) this._append(b);
       this.pending = [];
@@ -65,13 +66,17 @@ export class LiveTranscriber extends EventEmitter {
           if (ev.transcript && ev.transcript.trim()) this.emit('final', ev.transcript.trim());
           break;
         case 'error':
-          console.error('STT hata:', ev.error?.message || ev);
+          console.error('STT hata:', ev.error?.message || JSON.stringify(ev));
           break;
       }
     });
-    this.ws.on('close', () => {
+    this.ws.on('close', (code, reason) => {
       this.ready = false;
-      if (!this.closed) setTimeout(() => this.connect(), 1000);
+      if (this.closed) return;
+      this.fails = (this.fails || 0) + 1;
+      if (this.fails > 5) { console.error('STT: 5 kez bağlanamadı, vazgeçildi'); return; }
+      console.warn('STT bağlantısı kapandı', code, reason?.toString());
+      setTimeout(() => this.connect(), 2000 * this.fails);
     });
     this.ws.on('error', (e) => console.error('STT WS:', e.message));
   }
