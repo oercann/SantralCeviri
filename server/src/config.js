@@ -17,7 +17,7 @@ export const config = {
     key: env('OPENAI_API_KEY', ''),
     stt: env('STT_MODEL', 'gpt-4o-mini-transcribe'),
     translate: env('TRANSLATE_MODEL', 'gpt-4o-mini'),
-    tts: env('TTS_MODEL', 'gpt-4o-mini-tts'),
+    tts: env('TTS_MODEL', 'tts-1'),
     voiceEn: env('TTS_VOICE_EN', 'alloy'),
     voiceTr: env('TTS_VOICE_TR', 'nova'),
   },

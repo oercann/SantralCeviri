@@ -3,7 +3,7 @@ import { config, assertConfig, normalizeNumber } from './config.js';
 import { Ari } from './ari.js';
 import { Web } from './web.js';
 import { CallSession, PROMPTS } from './call.js';
-import { prewarm } from './openai.js';
+import { prewarm, FILLERS } from './openai.js';
 import { loadContacts, findByNumber } from './contacts.js';
 
 assertConfig();
@@ -112,5 +112,5 @@ process.on('unhandledRejection', (e) => console.error('unhandledRejection', e));
 
 ari.connect();
 web.listen();
-prewarm(Object.entries(PROMPTS).map(([k, text]) => ({ text, lang: k === 'remoteIntro' ? 'en' : 'tr' })));
+prewarm([...Object.entries(PROMPTS).map(([k, text]) => ({ text, lang: k === 'remoteIntro' ? 'en' : 'tr' })), ...FILLERS.map((text) => ({ text, lang: 'tr' }))]);
 console.log('Çeviri Asistanı başladı. DID:', config.trunk.myDid);

@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { config, normalizeNumber } from './config.js';
 import { RtpLeg, allocPort } from './rtp.js';
-import { LiveTranscriber, translate, speakStream, intent } from './openai.js';
+import { LiveTranscriber, translate, speakStream, intent, FILLERS } from './openai.js';
 import { allContacts, findByName } from './contacts.js';
 
 export const PROMPTS = {
@@ -151,23 +151,26 @@ export class CallSession extends EventEmitter {
     this.awaitDtmf = (digits) => this.dial(digits);
   }
 
-  /** Jarvis modu: Türkçe sesli komut. */
+  /** Jarvis modu: Türkçe sesli komut / soru. */
   async handleCommand(text) {
     this.emit('transcript', { speaker: 'user', type: 'final', text });
     if (this.busy) return;
     this.busy = true;
     try {
-      const r = await intent(text, allContacts(), this.assistantHistory);
+      // Anında kısa onay: sessizlik hissi olmasın
+      this.say(FILLERS[Math.floor(Math.random() * FILLERS.length)], 'tr');
+      const r = await intent(text, allContacts(), this.assistantHistory, (sentence) => {
+        this.emit('transcript', { speaker: 'assistant', type: 'final', text: sentence });
+        this.say(sentence, 'tr');
+      });
       this.log('Komut:', text, '→', JSON.stringify(r));
       if (r.action === 'call' && r.number) {
         const c = findByName(String(r.number));
         return this.dial(c ? c.number : r.number);
       }
       if (r.action === 'hangup') { await this.say(PROMPTS.bye, 'tr'); return this.end('user-bye'); }
-      const reply = r.reply || PROMPTS.notFound;
-      this.assistantHistory.push({ role: 'user', content: text }, { role: 'assistant', content: JSON.stringify(r) });
-      this.emit('transcript', { speaker: 'assistant', type: 'final', text: reply });
-      await this.say(reply, 'tr');
+      this.assistantHistory.push({ role: 'user', content: text }, { role: 'assistant', content: r.reply || '' });
+      await this.speakChain;
     } catch (e) {
       this.log('Komut hatası', e.message);
     } finally { this.busy = false; }

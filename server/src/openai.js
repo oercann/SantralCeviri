@@ -137,9 +137,7 @@ async function ttsRequest(text, lang) {
       input: text,
       response_format: 'pcm',
       speed: 1.05,
-      instructions: lang === 'en'
-        ? 'Clear, calm, friendly phone voice. Natural pacing.'
-        : 'Sakin, net, doğal bir telefon sesi.',
+      ...(config.openai.tts.startsWith('gpt-') ? { instructions: lang === 'en' ? 'Clear, calm, friendly phone voice.' : 'Sakin, net, doğal bir telefon sesi.' } : {}),
     }),
   });
   if (!res.ok) throw new Error('TTS hatası ' + res.status + ' ' + (await res.text()));
@@ -211,28 +209,75 @@ export async function prewarm(list) {
   console.log('Anonslar hazır:', ttsCache.size);
 }
 
-/** Sesli komutu yorumla → {action:'call'|'reply'|'hangup', number?, reply}. history: önceki [{role,content}] */
-export async function intent(text, contacts, history = []) {
-  const list = contacts.map((c) => `${c.name}: ${c.number}`).join('\n') || '(boş)';
-  const system = `Sen Türkçe konuşan kişisel bir sesli asistansın (telefon üzerinden). Her cevabı şu JSON ile ver:
-{"action":"call","number":"+1XXXXXXXXXX"}  → kullanıcı bir numarayı veya rehberdeki kişiyi aramak istiyorsa (rehberden numarayı sen koy; ABD numaraları +1 ile)
-{"action":"hangup"}  → kapatmak / veda etmek istiyorsa
-{"action":"reply","reply":"..."}  → diğer her şey için: soruyu genel bilginle doğrudan ve doğru cevapla (tarih, matematik, çeviri, tavsiye, bilgi, günlük plan, her konu). Telefonda dinleneceği için en fazla 2-3 cümle, sade ve samimi. "Ne yapabilirsin" derse: arama yapabildiğini, canlı tercümanlık yaptığını ve her soruyu cevaplayabildiğini söyle. Canlı veri (hava durumu, haber, trafik) gerekiyorsa erişimin olmadığını kısaca söyle.
-Sadece JSON yaz.
-Rehber:
-${list}`;
+/** Chat tamamlamayı akışla al; cümle tamamlandıkça onSentence(cümle) çağır. Tam metni döndürür. */
+export async function chatStream({ model, messages, temperature = 0.3, max_tokens = 300 }, onSentence) {
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${config.openai.key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: process.env.ASSISTANT_MODEL || config.openai.translate,
-      messages: [{ role: 'system', content: system }, ...history.slice(-8), { role: 'user', content: text }],
-      temperature: 0.3,
-      max_tokens: 250,
-      response_format: { type: 'json_object' },
-    }),
+    body: JSON.stringify({ model, messages, temperature, max_tokens, stream: true }),
   });
-  if (!res.ok) throw new Error('Intent hatası ' + res.status);
-  const j = await res.json();
-  try { return JSON.parse(j.choices?.[0]?.message?.content || '{}'); } catch { return { action: 'reply', reply: 'Anlayamadım, tekrar eder misiniz?' }; }
+  if (!res.ok) throw new Error('Chat hatası ' + res.status + ' ' + (await res.text()));
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '', full = '', pending = '';
+  const flush = (force) => {
+    // cümle sonu: . ! ? : veya satır sonu
+    let m;
+    while ((m = /^([\s\S]*?[.!?:…]+)(\s+|$)/.exec(pending)) && (force || m[2])) {
+      const sent = m[1].trim();
+      pending = pending.slice(m[0].length);
+      if (sent) onSentence(sent);
+      if (!m[2]) break;
+    }
+    if (force && pending.trim()) { onSentence(pending.trim()); pending = ''; }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const d = JSON.parse(data).choices?.[0]?.delta?.content;
+        if (d) { full += d; pending += d; flush(false); }
+      } catch {}
+    }
+  }
+  flush(true);
+  return full;
 }
+
+/**
+ * Jarvis modu. Model ya bir komut etiketi döndürür ([CALL:+1...] / [HANGUP]) ya da
+ * doğal cevap yazar; cevap cümle cümle onSentence ile akar.
+ * Dönüş: {action:'call',number} | {action:'hangup'} | {action:'reply', reply}
+ */
+export async function intent(text, contacts, history = [], onSentence = () => {}) {
+  const list = contacts.map((c) => `${c.name}: ${c.number}`).join('\n') || '(boş)';
+  const system = `Sen Türkçe konuşan kişisel bir sesli asistansın (telefon üzerinden konuşuyorsun).
+Kurallar:
+- Kullanıcı bir numarayı ya da rehberdeki kişiyi aramak istiyorsa SADECE şunu yaz: [CALL:+1XXXXXXXXXX] (rehberden numarayı sen koy; ABD numaraları +1 ile).
+- Kapatmak/veda etmek istiyorsa SADECE: [HANGUP]
+- Diğer her şeyde soruyu genel bilginle doğrudan cevapla: bilgi, hesap, tavsiye, plan, çeviri, her konu. Telefonda dinlenecek: en fazla 2-3 kısa cümle, sade, samimi, madde işareti yok.
+- "Ne yapabilirsin" derse: arama yapabildiğini, görüşmede canlı tercümanlık yaptığını ve her soruyu cevaplayabildiğini söyle.
+- Canlı veri (hava, haber, trafik) istenirse erişimin olmadığını kısaca söyle.
+Rehber:
+${list}`;
+  let cmd = null;
+  const full = await chatStream(
+    { model: process.env.ASSISTANT_MODEL || config.openai.translate, messages: [{ role: 'system', content: system }, ...history.slice(-8), { role: 'user', content: text }] },
+    (sent) => {
+      const m = /\[CALL:([+\d]+)\]/.exec(sent);
+      if (m) { cmd = { action: 'call', number: m[1] }; return; }
+      if (/\[HANGUP\]/.test(sent)) { cmd = { action: 'hangup' }; return; }
+      onSentence(sent);
+    }
+  );
+  return cmd || { action: 'reply', reply: full.trim() };
+}
+
+export const FILLERS = ['Tamam.', 'Bakıyorum.', 'Bir saniye.', 'Hemen.'];
