@@ -6,6 +6,13 @@ import { config } from './config.js';
 const FRAME_MS = 20;
 const FRAME_SAMPLES = (config.rtp.sampleRate * FRAME_MS) / 1000; // 320
 const FRAME_BYTES = FRAME_SAMPLES * 2; // 640
+// Asterisk, slin formatlarını RTP'de network byte order (big-endian) ile taşır.
+const SWAP = process.env.RTP_BIG_ENDIAN !== '0';
+function swap16(buf) {
+  const out = Buffer.allocUnsafe(buf.length & ~1);
+  for (let i = 0; i < out.length; i += 2) { out[i] = buf[i + 1]; out[i + 1] = buf[i]; }
+  return out;
+}
 
 let nextPort = config.rtp.portBase;
 export function allocPort() {
@@ -50,7 +57,8 @@ export class RtpLeg extends EventEmitter {
         off += 4 + extLen;
       }
       if (off >= msg.length) return;
-      this.emit('audio', msg.subarray(off));
+      const payload = msg.subarray(off);
+      this.emit('audio', SWAP ? swap16(payload) : payload);
     });
     this.sock.on('error', (e) => console.error('RTP soket hatası', e.message));
     this.sock.bind(port, config.rtp.host);
@@ -82,8 +90,9 @@ export class RtpLeg extends EventEmitter {
       }
       return;
     }
-    const payload = this.queue.subarray(0, FRAME_BYTES);
+    let payload = this.queue.subarray(0, FRAME_BYTES);
     this.queue = this.queue.subarray(FRAME_BYTES);
+    if (SWAP) payload = swap16(payload);
     const hdr = Buffer.alloc(12);
     hdr[0] = 0x80;
     hdr[1] = this.pt & 0x7f;
