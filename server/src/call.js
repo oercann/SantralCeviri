@@ -31,7 +31,10 @@ export class CallSession extends EventEmitter {
 
   // ---------- Kurulum ----------
   async start() {
+    this.log('Gelen çağrı, bacak kuruluyor');
+    await this.ari.play(this.user.channel.id, 'sound:beep').catch((e) => this.log('beep hatası', e.message));
     await this.setupLeg(this.user);
+    this.log('Bacak hazır, RTP port', this.user.rtp.port);
     this.setState('auth');
     if (PIN) {
       await this.say(this.user, 'Merhaba. Lütfen PIN kodunuzu girin.');
@@ -147,7 +150,11 @@ export class CallSession extends EventEmitter {
     await this.ari.addToBridge(leg.bridge.id, mediaId);
 
     leg.stt = new LiveTranscriber(leg.lang);
+    leg.rtp.on('ready', () => this.log(name, 'RTP: Asterisk paketi geldi', leg.rtp.peer.address + ':' + leg.rtp.peer.port));
+    let frames = 0;
+    setTimeout(() => { if (!leg.rtp.peer) this.log(name, 'UYARI: 3 sn içinde Asterisk\'ten RTP gelmedi'); }, 3000);
     leg.rtp.on('audio', (pcm) => {
+      if (++frames % 250 === 0) this.log(name, 'RTP kare', frames);
       if (this.state === 'connected') leg.stt.feed(pcm);
     });
     leg.stt.on('speech_started', () => {
@@ -184,7 +191,9 @@ export class CallSession extends EventEmitter {
   async say(leg, text) {
     if (!leg.rtp) return;
     try {
+      const t0 = Date.now();
       const pcm = await speak(text, leg.lang);
+      this.log('TTS', pcm.length, 'bayt', Date.now() - t0, 'ms →', text.slice(0, 30));
       leg.rtp.send(pcm);
       await new Promise((r) => setTimeout(r, leg.rtp.pendingMs + 200));
     } catch (e) {
