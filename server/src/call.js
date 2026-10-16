@@ -1,9 +1,10 @@
-// Çağrı yöneticisi v2 — gerçek zamanlı ses→ses tercüman
+// Çağrı yöneticisi v3 — üç kişilik hat (sen + karşı taraf + tercüman)
 //
-//  user  ──bridge──┬── media(user)   : user'ın sesi → Tercüman TR→EN → remote'a çalınır
-//  remote──bridge──┴── media(remote) : remote'un sesi → Tercüman EN→TR → user'a çalınır
-//  Taraflar birbirinin orijinal sesini duymaz; sadece çeviriyi duyar (temiz, karışma yok).
-//  Bağlanmadan önce user tarafında "asistan" oturumu (Jarvis) çalışır.
+//  Ortak köprü (mixing): [user] + [remote] + [media-main]  → herkes birbirini duyar,
+//  tercümanın/asistanın sesi media-main üzerinden hatta verilir (sıra ile, aynı anda tek ses).
+//  Her tarafın yalnızca kendi konuşması Snoop(spy=in) ile ayrı dinlenir:
+//     user  → snoop → Tercüman TR→EN ─┐
+//     remote→ snoop → Tercüman EN→TR ─┴→ Çıkış kapısı → media-main (hat)
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { config, normalizeNumber } from './config.js';
@@ -21,13 +22,42 @@ export const PROMPTS = {
   bye: 'Görüşmek üzere.',
   dialing: 'Aranıyor.',
   failed: 'Arama yapılamadı.',
-  connected: 'Bağlandı, konuşabilirsiniz.',
+  connected: 'Bağlandı. Tercüman hatta.',
   noAnswer: 'Karşı taraf cevap vermedi.',
   remoteHangup: 'Karşı taraf görüşmeyi sonlandırdı.',
-  remoteIntro: 'Hello, this call is interpreted live from Turkish. Please go ahead.',
+  remoteIntro: 'Hello, an interpreter is on the line. Please speak after each sentence is interpreted.',
 };
 
 const PIN = process.env.ACCESS_PIN || '';
+
+/** Tek çıkış kapısı: birden çok kaynak (tercümanlar, anonslar) aynı hatta sırayla konuşur. */
+class OutputGate {
+  constructor(rtp) { this.rtp = rtp; this.active = null; this.waiting = []; }
+  /** Bir kaynak konuşmaya başlıyor; kapı boşsa canlı geçer, doluysa tamponlanır. */
+  open(key) {
+    const src = { key, chunks: [], done: false, live: false };
+    if (!this.active) { this.active = src; src.live = true; this.rtp.beginUtterance(); }
+    else this.waiting.push(src);
+    return src;
+  }
+  push(src, pcm) { if (src.live) this.rtp.send(pcm); else src.chunks.push(pcm); }
+  close(src) {
+    src.done = true;
+    if (src.live) this._finish();
+  }
+  _finish() {
+    this.rtp.endUtterance();
+    this.active = null;
+    const next = this.waiting.shift();
+    if (!next) return;
+    this.active = next; next.live = true;
+    this.rtp.beginUtterance();
+    for (const c of next.chunks) this.rtp.send(c);
+    next.chunks = [];
+    if (next.done) this._finish();
+  }
+  flush() { this.rtp.flush(); }
+}
 
 export class CallSession extends EventEmitter {
   constructor(ari, userChannel, contact = null) {
@@ -35,8 +65,10 @@ export class CallSession extends EventEmitter {
     this.ari = ari;
     this.contact = contact;
     this.id = randomUUID().slice(0, 8);
-    this.user = { name: 'user', channel: userChannel, lang: 'tr', bridge: null, media: null, rtp: null, interp: null };
-    this.remote = { name: 'remote', channel: null, lang: 'en', bridge: null, media: null, rtp: null, interp: null };
+    this.user = { name: 'user', channel: userChannel, lang: 'tr', snoop: null, interp: null };
+    this.remote = { name: 'remote', channel: null, lang: 'en', snoop: null, interp: null };
+    this.main = { bridge: null, media: null, rtp: null };
+    this.gate = null;
     this.assistant = null;
     this.history = [];
     this.state = 'init';
@@ -49,14 +81,23 @@ export class CallSession extends EventEmitter {
   // ---------- Kurulum ----------
   async start() {
     this.log('Gelen çağrı');
-    await this.setupLeg(this.user);
+    this.main.bridge = await this.ari.createBridge(`main-${this.id}`);
+    await this.ari.addToBridge(this.main.bridge.id, this.user.channel.id);
+    this.main.media = await this.createMedia(`media-main-${this.id}`, this.main.bridge.id);
+    this.main.rtp = this.main.media.rtp;
+    this.gate = new OutputGate(this.main.rtp);
+    // Bağlanmadan önce köprüde yalnız user var → bu ses asistana gider
+    this.main.rtp.on('audio', (pcm) => {
+      if (this.state === 'dialing-prompt' && this.assistant && Date.now() > (this.keypadUntil || 0)) this.assistant.feed(pcm);
+    });
+
     this.setState('auth');
     if (this.contact?.trusted) {
       this.log('Tanınan arayan:', this.contact.name);
-      await this.say(this.user, `Merhaba ${this.contact.name}.`);
+      await this.say(`Merhaba ${this.contact.name}.`, 'tr');
       await this.askTarget();
     } else if (PIN) {
-      await this.say(this.user, PROMPTS.pin);
+      await this.say(PROMPTS.pin, 'tr');
       this.dtmf = '';
       this.awaitDtmf = (digits) => this.checkPin(digits);
     } else {
@@ -64,51 +105,48 @@ export class CallSession extends EventEmitter {
     }
   }
 
-  async setupLeg(leg) {
-    leg.bridge = await this.ari.createBridge(`${leg.name}-${this.id}`);
-    await this.ari.addToBridge(leg.bridge.id, leg.channel.id);
+  async createMedia(id, bridgeId) {
     const port = allocPort();
-    leg.rtp = new RtpLeg(port);
-    leg.media = { id: `media-${leg.name}-${this.id}` };
+    const rtp = new RtpLeg(port);
     await this.ari.request('POST', '/channels/externalMedia', {
-      app: config.ari.app,
-      channelId: leg.media.id,
+      app: config.ari.app, channelId: id,
       external_host: `${config.rtp.host}:${port}`,
-      format: 'ulaw',
-      encapsulation: 'rtp',
-      transport: 'udp',
-      connection_type: 'client',
-      direction: 'both',
+      format: 'ulaw', encapsulation: 'rtp', transport: 'udp', connection_type: 'client', direction: 'both',
     });
-    await this.ari.addToBridge(leg.bridge.id, leg.media.id);
-    setTimeout(() => { if (!leg.rtp.peer) this.log(leg.name, 'UYARI: Asterisk\'ten RTP gelmedi'); }, 3000);
-    leg.rtp.on('audio', (pcm) => this.onAudio(leg, pcm));
+    await this.ari.addToBridge(bridgeId, id);
+    setTimeout(() => { if (!rtp.peer) this.log(id, 'UYARI: Asterisk\'ten RTP gelmedi'); }, 3000);
+    return { id, rtp, port };
   }
 
-  /** Tarafın sesi: duruma göre asistana ya da tercümana gider. */
-  onAudio(leg, pcm) {
-    if (leg === this.user && this.state === 'dialing-prompt' && this.assistant && Date.now() > (this.keypadUntil || 0)) {
-      this.assistant.feed(pcm);
-    } else if (this.state === 'connected' && leg.interp) {
-      leg.interp.feed(pcm);
-    }
+  /** Bir tarafın yalnızca kendi sesini dinleyen snoop + media. */
+  async setupSnoop(party) {
+    const snoopId = `snoop-${party.name}-${this.id}`;
+    await this.ari.request('POST', `/channels/${party.channel.id}/snoop`, {
+      app: config.ari.app, appArgs: 'snoop', snoopId, spy: 'in', whisper: 'none',
+    });
+    const bridge = await this.ari.createBridge(`snoop-${party.name}-${this.id}`);
+    await this.ari.addToBridge(bridge.id, snoopId);
+    const media = await this.createMedia(`media-${party.name}-${this.id}`, bridge.id);
+    party.snoop = { id: snoopId, bridge, media };
+    media.rtp.on('audio', (pcm) => { if (this.state === 'connected' && party.interp) party.interp.feed(pcm); });
   }
 
-  /** Model çıkışını bir bacağa bağla (tampon yönetimiyle). */
-  pipe(session, toLeg, speakerLabel) {
-    session.on('response_start', () => toLeg.rtp.beginUtterance());
-    session.on('audio', (pcm) => toLeg.rtp.send(pcm));
-    session.on('response_end', () => toLeg.rtp.endUtterance());
-    session.on('heard', (t) => { this.emit('transcript', { speaker: speakerLabel, type: 'final', text: t }); this.history.push({ who: speakerLabel, text: t }); });
-    session.on('said', (t) => this.emit('transcript', { speaker: speakerLabel, type: 'translated', text: t }));
+  /** Bir model oturumunun çıkışını kapıya bağla. */
+  pipe(session, label) {
+    let src = null;
+    session.on('response_start', () => { src = this.gate.open(label); });
+    session.on('audio', (pcm) => { if (src) this.gate.push(src, pcm); });
+    session.on('response_end', () => { if (src) { this.gate.close(src); src = null; } });
+    session.on('heard', (t) => { this.emit('transcript', { speaker: label, type: 'final', text: t }); this.history.push({ who: label, text: t }); });
+    session.on('said', (t) => this.emit('transcript', { speaker: label, type: 'translated', text: t }));
   }
 
   // ---------- Asistan (Jarvis) ----------
   startAssistant() {
     if (this.assistant) return;
     const a = new RealtimeSession({ role: 'assistant', instructions: ROLES.assistant(allContacts()), tools: ASSISTANT_TOOLS, label: 'asistan' });
-    this.pipe(a, this.user, 'user');
-    a.on('speech_started', () => this.user.rtp.flush()); // araya girince anonsu kes
+    this.pipe(a, 'user');
+    a.on('speech_started', () => this.gate.flush()); // araya girince anonsu kes
     a.on('tool', async ({ name, callId, args }) => {
       this.log('Araç:', name, JSON.stringify(args));
       if (name === 'call_number') {
@@ -116,7 +154,7 @@ export class CallSession extends EventEmitter {
         const n = normalizeNumber(c ? c.number : args.number);
         if (!n || n.length < 8) return a.toolResult(callId, { ok: false, error: 'Numara anlaşılamadı' });
         a.toolResult(callId, { ok: true, dialing: n });
-        setTimeout(() => this.dial(n), 1200); // "Arıyorum" demesine zaman tanı
+        setTimeout(() => this.dial(n), 1200);
       } else if (name === 'hangup') {
         a.toolResult(callId, { ok: true });
         setTimeout(() => this.end('user-bye'), 1500);
@@ -125,33 +163,28 @@ export class CallSession extends EventEmitter {
           const answer = await webSearch(String(args.query || ''));
           this.log('Arama sonucu:', answer.slice(0, 120));
           a.toolResult(callId, { ok: true, answer });
-        } catch (e) {
-          a.toolResult(callId, { ok: false, error: e.message });
-        }
+        } catch (e) { a.toolResult(callId, { ok: false, error: e.message }); }
       }
     });
     this.assistant = a;
   }
 
-  stopAssistant() {
-    this.assistant?.close();
-    this.assistant = null;
-  }
+  stopAssistant() { this.assistant?.close(); this.assistant = null; }
 
   // ---------- Giriş / hedef ----------
   async checkPin(digits) {
     if (digits === PIN) { this.awaitDtmf = null; await this.askTarget(); return; }
     this.pinTries = (this.pinTries || 0) + 1;
-    if (this.pinTries >= 3) { await this.say(this.user, PROMPTS.badPinFinal); return this.end('bad-pin'); }
+    if (this.pinTries >= 3) { await this.say(PROMPTS.badPinFinal, 'tr'); return this.end('bad-pin'); }
     this.dtmf = '';
-    await this.say(this.user, PROMPTS.badPin);
+    await this.say(PROMPTS.badPin, 'tr');
   }
 
   async askTarget() {
     this.setState('dialing-prompt');
     if (this.pendingTarget) return this.dial(this.pendingTarget);
     this.startAssistant();
-    await this.say(this.user, PROMPTS.number);
+    await this.say(PROMPTS.number, 'tr');
     this.dtmf = '';
     this.awaitDtmf = (digits) => this.dial(digits);
   }
@@ -165,7 +198,7 @@ export class CallSession extends EventEmitter {
   onDtmf(digit) {
     if (!this.awaitDtmf) return;
     this.keypadUntil = Date.now() + 5000;
-    this.user.rtp.flush();
+    this.gate.flush();
     clearTimeout(this.dtmfTimer);
     if (digit === '#') { const d = this.dtmf; this.dtmf = ''; return this.awaitDtmf(d); }
     if (digit === '*') { this.dtmf = ''; return; }
@@ -182,66 +215,58 @@ export class CallSession extends EventEmitter {
   async dial(number) {
     if (this.state === 'ringing' || this.state === 'connected') return;
     const n = normalizeNumber(number);
-    if (!n || n.length < 8) { await this.say(this.user, PROMPTS.notFound); return; }
+    if (!n || n.length < 8) { await this.say(PROMPTS.notFound, 'tr'); return; }
     this.awaitDtmf = null;
     this.stopAssistant();
     this.target = n;
     this.setState('ringing');
     this.emit('status', { target: n });
-    await this.say(this.user, PROMPTS.dialing);
+    await this.say(PROMPTS.dialing, 'tr');
     const chanId = `remote-${this.id}`;
     this.remote.channel = { id: chanId };
     try {
       await this.ari.request('POST', '/channels', {
         endpoint: `PJSIP/${n.replace('+', '')}@${config.trunk.endpoint}`,
-        app: config.ari.app,
-        appArgs: `outbound,${n}`,
-        callerId: config.trunk.myDid,
-        channelId: chanId,
-        timeout: 45,
+        app: config.ari.app, appArgs: `outbound,${n}`, callerId: config.trunk.myDid, channelId: chanId, timeout: 45,
       });
     } catch (e) {
       this.log('Arama başarısız', e.message);
-      await this.say(this.user, PROMPTS.failed);
+      await this.say(PROMPTS.failed, 'tr');
       return this.end('originate-failed');
     }
   }
 
-  /** Karşı taraf açtı: iki tercüman oturumu. */
+  /** Karşı taraf açtı: ortak köprüye al, iki tarafa snoop + tercüman. */
   async onRemoteAnswered(channel) {
     this.remote.channel = channel;
-    await this.setupLeg(this.remote);
-    // user'ın Türkçesi → İngilizce → remote
+    await this.ari.addToBridge(this.main.bridge.id, channel.id);
+    await this.setupSnoop(this.user);
+    await this.setupSnoop(this.remote);
     this.user.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('Turkish', 'English'), label: 'TR→EN' });
-    this.pipe(this.user.interp, this.remote, 'user');
-    // remote'un İngilizcesi → Türkçe → user
+    this.pipe(this.user.interp, 'user');
     this.remote.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('English', 'Turkish'), label: 'EN→TR' });
-    this.pipe(this.remote.interp, this.user, 'remote');
+    this.pipe(this.remote.interp, 'remote');
     this.setState('connected');
     this.emit('status', { connected: true });
-    this.say(this.user, PROMPTS.connected);
-    this.say(this.remote, PROMPTS.remoteIntro, 'en');
+    await this.say(PROMPTS.remoteIntro, 'en');
   }
 
-  // ---------- Sistem anonsları (önbellekli TTS) ----------
-  async say(leg, text, lang = leg.lang) {
-    if (!leg.rtp || this.ended) return;
+  // ---------- Anonslar (önbellekli TTS) — kapı üzerinden ----------
+  async say(text, lang) {
+    if (!this.gate || this.ended) return;
+    const src = this.gate.open('anons');
     try {
-      leg.rtp.beginUtterance();
-      await speakStream(text, lang, (pcm) => leg.rtp.send(pcm));
-      leg.rtp.endUtterance();
-      await new Promise((r) => setTimeout(r, leg.rtp.pendingMs + 60));
-    } catch (e) {
-      leg.rtp.endUtterance();
-      this.log('say hatası', e.message);
-    }
+      await speakStream(text, lang, (pcm) => this.gate.push(src, pcm));
+    } catch (e) { this.log('say hatası', e.message); }
+    this.gate.close(src);
+    await new Promise((r) => setTimeout(r, this.main.rtp.pendingMs + 60));
   }
 
-  /** PWA'dan yazılı metin: İngilizce olarak karşı tarafa okut. */
+  /** PWA'dan yazılı metin: İngilizce olarak hatta okut. */
   async typeToRemote(text) {
     if (this.state !== 'connected') return;
     this.emit('transcript', { speaker: 'user', type: 'final', text });
-    await this.say(this.remote, text, 'en');
+    await this.say(text, 'en');
   }
 
   setState(s) { this.state = s; this.emit('status', { state: s }); }
@@ -253,13 +278,19 @@ export class CallSession extends EventEmitter {
     this.setState('ended');
     this.log('Görüşme bitti:', reason);
     this.stopAssistant();
-    for (const leg of [this.user, this.remote]) {
-      leg.interp?.close();
-      leg.rtp?.close();
-      if (leg.media) await this.ari.hangup(leg.media.id);
-      if (leg.channel) await this.ari.hangup(leg.channel.id);
-      if (leg.bridge) await this.ari.destroyBridge(leg.bridge.id);
+    for (const party of [this.user, this.remote]) {
+      party.interp?.close();
+      if (party.snoop) {
+        party.snoop.media.rtp.close();
+        await this.ari.hangup(party.snoop.media.id);
+        await this.ari.hangup(party.snoop.id);
+        await this.ari.destroyBridge(party.snoop.bridge.id);
+      }
+      if (party.channel) await this.ari.hangup(party.channel.id);
     }
+    this.main.rtp?.close();
+    if (this.main.media) await this.ari.hangup(this.main.media.id);
+    if (this.main.bridge) await this.ari.destroyBridge(this.main.bridge.id);
     this.emit('ended', { reason, history: this.history });
   }
 }

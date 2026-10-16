@@ -70,13 +70,13 @@ ari.on('StasisEnd', (ev) => {
   if (id === session.user.channel.id) session.end('user-hangup');
   else if (id === session.remote.channel?.id && session.state !== 'ended') {
     // Karşı taraf kapattı: Onur'a haber ver, sonra bitir
-    session.say(session.user, PROMPTS.remoteHangup).then(() => session.end('remote-hangup'));
+    session.say(PROMPTS.remoteHangup, 'tr').then(() => session.end('remote-hangup'));
   }
 });
 
 ari.on('ChannelDestroyed', (ev) => {
   if (session && ev.channel.id === session.remote.channel?.id && session.state === 'ringing') {
-    session.say(session.user, PROMPTS.noAnswer).then(() => session.end('no-answer'));
+    session.say(PROMPTS.noAnswer, 'tr').then(() => session.end('no-answer'));
   }
 });
 
