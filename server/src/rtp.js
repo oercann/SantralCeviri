@@ -33,6 +33,7 @@ export class RtpLeg extends EventEmitter {
     this.queue = Buffer.alloc(0);
     this.timer = null;
     this.closed = false;
+    this.sent = 0;
 
     this.sock.on('message', (msg, rinfo) => {
       if (msg.length < 12) return;
@@ -76,6 +77,7 @@ export class RtpLeg extends EventEmitter {
       if (this.queue.length === 0 && this.timer) {
         clearInterval(this.timer);
         this.timer = null;
+        console.log(`RTP port ${this.port}: kuyruk bitti, toplam ${this.sent} kare gönderildi → ${this.peer?.address}:${this.peer?.port} pt=${this.pt}`);
         this.emit('drained');
       }
       return;
@@ -90,7 +92,8 @@ export class RtpLeg extends EventEmitter {
     hdr.writeUInt32BE(this.ssrc, 8);
     this.seq = (this.seq + 1) & 0xffff;
     this.ts = (this.ts + FRAME_SAMPLES) >>> 0;
-    this.sock.send(Buffer.concat([hdr, payload]), this.peer.port, this.peer.address);
+    this.sent++;
+    this.sock.send(Buffer.concat([hdr, payload]), this.peer.port, this.peer.address, (e) => { if (e) console.error('RTP send hatası', e.message); });
   }
 
   close() {
