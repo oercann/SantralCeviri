@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { config, normalizeNumber } from './config.js';
 import { RtpLeg, allocPort } from './rtp.js';
-import { LiveTranscriber, translate, speakStream } from './openai.js';
+import { LiveTranscriber, translate, speakStream, intent } from './openai.js';
+import { allContacts, findByName } from './contacts.js';
 
 export const PROMPTS = {
   pin: PROMPTS.pin,
@@ -27,9 +28,10 @@ const PIN = process.env.ACCESS_PIN || '';
  * Bacaklar birbirini doğrudan duymaz; sadece çevrilmiş sesi duyar.
  */
 export class CallSession extends EventEmitter {
-  constructor(ari, userChannel) {
+  constructor(ari, userChannel, contact = null) {
     super();
     this.ari = ari;
+    this.contact = contact; // arayan rehberde tanınıyorsa
     this.id = randomUUID().slice(0, 8);
     this.user = { channel: userChannel, bridge: null, media: null, rtp: null, stt: null, lang: 'tr' };
     this.remote = { channel: null, bridge: null, media: null, rtp: null, stt: null, lang: 'en' };
@@ -47,7 +49,11 @@ export class CallSession extends EventEmitter {
     await this.setupLeg(this.user);
     this.log('Bacak hazır, RTP port', this.user.rtp.port);
     this.setState('auth');
-    if (PIN) {
+    if (this.contact?.trusted) {
+      this.log('Tanınan arayan:', this.contact.name);
+      await this.say(this.user, `Merhaba ${this.contact.name}.`);
+      await this.askTarget();
+    } else if (PIN) {
       await this.say(this.user, PROMPTS.pin);
       this.dtmf = '';
       this.awaitDtmf = (digits) => this.checkPin(digits);
@@ -77,6 +83,27 @@ export class CallSession extends EventEmitter {
     await this.say(this.user, PROMPTS.number);
     this.dtmf = '';
     this.awaitDtmf = (digits) => this.dial(digits);
+  }
+
+  /** Jarvis modu: karşılama sonrası Türkçe sesli komut. */
+  async handleCommand(text) {
+    this.emit('transcript', { speaker: 'user', type: 'final', text });
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const r = await intent(text, allContacts());
+      this.log('Komut:', text, '→', JSON.stringify(r));
+      if (r.action === 'call' && r.number) {
+        const c = findByName(String(r.number)) ;
+        return this.dial(c ? c.number : r.number);
+      }
+      if (r.action === 'hangup') { await this.say(this.user, PROMPTS.bye); return this.end('user-bye'); }
+      const reply = r.reply || PROMPTS.notFound;
+      this.emit('transcript', { speaker: 'assistant', type: 'final', text: reply });
+      await this.say(this.user, reply);
+    } catch (e) {
+      this.log('Komut hatası', e.message);
+    } finally { this.busy = false; }
   }
 
   /** PWA'dan hedef numara geldi. */
@@ -167,7 +194,7 @@ export class CallSession extends EventEmitter {
     setTimeout(() => { if (!leg.rtp.peer) this.log(name, 'UYARI: 3 sn içinde Asterisk\'ten RTP gelmedi'); }, 3000);
     leg.rtp.on('audio', (pcm) => {
       if (++frames % 250 === 0) this.log(name, 'RTP kare', frames);
-      if (this.state === 'connected') leg.stt.feed(pcm);
+      if (this.state === 'connected' || (leg === this.user && this.state === 'dialing-prompt')) leg.stt.feed(pcm);
     });
     leg.stt.on('speech_started', () => {
       // Kişi konuşmaya başladı: ona çalmakta olan çeviriyi kes (barge-in)
@@ -180,6 +207,8 @@ export class CallSession extends EventEmitter {
 
   // ---------- Çeviri hattı ----------
   async handleUtterance(fromLeg, text) {
+    if (fromLeg === this.user && this.state === 'dialing-prompt') return this.handleCommand(text);
+    if (this.state !== 'connected') return;
     const toLeg = fromLeg === this.user ? this.remote : this.user;
     const direction = fromLeg === this.user ? 'tr>en' : 'en>tr';
     const speaker = fromLeg === this.user ? 'user' : 'remote';

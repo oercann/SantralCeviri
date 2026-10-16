@@ -26,6 +26,7 @@ if [[ ! -f $ENV_FILE ]]; then
   chmod 600 "$ENV_FILE"
   echo "!! $ENV_FILE dosyasını düzenle (Telnyx, OpenAI anahtarları, numaralar)"
 fi
+[[ -f /etc/ceviri-contacts.json ]] || cp "$HERE/ceviri-contacts.example.json" /etc/ceviri-contacts.json
 set -a; source "$ENV_FILE"; set +a
 
 PUBLIC_IP="${PUBLIC_IP:-$(curl -s4 https://api.ipify.org || true)}"

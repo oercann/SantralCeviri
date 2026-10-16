@@ -195,3 +195,29 @@ export async function prewarm(list) {
   }
   console.log('Anonslar hazır:', ttsCache.size);
 }
+
+/** Sesli komutu yorumla → {action:'call'|'reply'|'hangup', number?, contact?, reply} */
+export async function intent(text, contacts) {
+  const list = contacts.map((c) => `${c.name}: ${c.number}`).join('\n') || '(boş)';
+  const system = `Sen bir telefon asistanısın. Kullanıcı Türkçe konuşur. Görevin, söylediğini şu JSON'a çevirmek:
+{"action":"call","number":"+1XXXXXXXXXX"}  → bir numarayı veya rehberdeki kişiyi aramak istiyorsa (rehberden numarayı sen koy; ABD numaraları +1 ile)
+{"action":"hangup"}  → kapatmak istiyorsa
+{"action":"reply","reply":"..."}  → başka her durumda; kısa, samimi, Türkçe bir cevap ver. "Ne yapabilirim" derse seçenekleri 1 cümlede say: bir kişiyi veya numarayı aramak.
+Sadece JSON yaz.
+Rehber:
+${list}`;
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.openai.key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: config.openai.translate,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: text }],
+      temperature: 0,
+      max_tokens: 150,
+      response_format: { type: 'json_object' },
+    }),
+  });
+  if (!res.ok) throw new Error('Intent hatası ' + res.status);
+  const j = await res.json();
+  try { return JSON.parse(j.choices?.[0]?.message?.content || '{}'); } catch { return { action: 'reply', reply: 'Anlayamadım, tekrar eder misiniz?' }; }
+}

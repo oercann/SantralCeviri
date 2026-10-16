@@ -4,8 +4,10 @@ import { Ari } from './ari.js';
 import { Web } from './web.js';
 import { CallSession, PROMPTS } from './call.js';
 import { prewarm } from './openai.js';
+import { loadContacts, findByNumber } from './contacts.js';
 
 assertConfig();
+loadContacts();
 
 const ari = new Ari();
 const web = new Web();
@@ -32,7 +34,8 @@ ari.on('StasisStart', async (ev) => {
 
   if (kind === 'inbound') {
     const caller = normalizeNumber(arg || ch.caller?.number);
-    if (caller !== normalizeNumber(config.trunk.myCell)) {
+    const contact = findByNumber(caller);
+    if (!contact && caller !== normalizeNumber(config.trunk.myCell)) {
       console.warn('Yetkisiz arayan reddedildi:', caller);
       return ari.hangup(ch.id);
     }
@@ -40,7 +43,7 @@ ari.on('StasisStart', async (ev) => {
       console.warn('Zaten aktif görüşme var, yeni arama reddedildi');
       return ari.hangup(ch.id);
     }
-    const s = new CallSession(ari, ch);
+    const s = new CallSession(ari, ch, contact);
     attach(s);
     if (pendingTarget) { s.pendingTarget = pendingTarget; pendingTarget = null; }
     try { await s.start(); } catch (e) { console.error('Oturum başlatılamadı', e); s.end('error'); }
