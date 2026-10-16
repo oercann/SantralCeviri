@@ -7,16 +7,18 @@ import { LiveTranscriber, translate, speakStream, intent } from './openai.js';
 import { allContacts, findByName } from './contacts.js';
 
 export const PROMPTS = {
-  pin: PROMPTS.pin,
-  badPin: PROMPTS.badPin,
-  badPinFinal: PROMPTS.badPinFinal,
-  number: PROMPTS.number,
-  dialing: PROMPTS.dialing,
-  failed: PROMPTS.failed,
-  connected: PROMPTS.connected,
+  pin: 'Merhaba. Lütfen PIN kodunuzu girin.',
+  badPin: 'Hatalı PIN, tekrar deneyin.',
+  badPinFinal: 'Hatalı PIN. Görüşme sonlandırılıyor.',
+  number: 'Kimi arayalım? İsmi veya numarayı söyleyebilir ya da tuşlayıp kare tuşuna basabilirsiniz.',
+  notFound: 'Bu kişiyi rehberde bulamadım.',
+  bye: 'Görüşmek üzere.',
+  dialing: 'Aranıyor. Karşı taraf açınca Türkçe konuşmaya başlayabilirsiniz.',
+  failed: 'Arama yapılamadı.',
+  connected: 'Bağlandı.',
   noAnswer: 'Karşı taraf cevap vermedi.',
   remoteIntro: "Hello, this is a live interpreter line. The caller speaks Turkish; you will hear their words in English. Please speak normally and pause briefly between sentences.",
-};
+}
 
 const PIN = process.env.ACCESS_PIN || '';
 

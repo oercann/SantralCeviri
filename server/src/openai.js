@@ -2,7 +2,7 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'node:events';
 import { config } from './config.js';
-import { resample } from './audio.js';
+import { resample, Decimator3, ulawToPcm } from './audio.js';
 
 const OAI_RATE = 24000; // Realtime ve TTS pcm16 24 kHz
 
@@ -151,31 +151,46 @@ async function ttsRequest(text, lang) {
  * Çıktı aynı zamanda tam PCM olarak döner (cache için).
  */
 export async function speakStream(text, lang, onPcm) {
-  const cached = ttsCache.get(lang + '|' + text);
+  const key = lang + '|' + text;
+  const cached = ttsCache.get(key);
   if (cached) { onPcm(cached); return cached; }
-  const res = await ttsRequest(text, lang);
-  const reader = res.body.getReader();
   const chunks = [];
-  let pending = Buffer.alloc(0);
-  const CHUNK = 4800; // 100 ms @ 24 kHz
+  const push = (pcm) => { if (pcm.length) { chunks.push(pcm); onPcm(pcm); } };
+
+  if (process.env.TTS_PROVIDER === 'elevenlabs' && process.env.ELEVENLABS_API_KEY) {
+    await elevenLabsStream(text, lang, push);
+  } else {
+    const res = await ttsRequest(text, lang);
+    const reader = res.body.getReader();
+    const dec = new Decimator3();
+    let pending = Buffer.alloc(0);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      pending = Buffer.concat([pending, Buffer.from(value)]);
+      const usable = pending.length & ~1;
+      if (usable >= 2400) { push(dec.process(pending.subarray(0, usable))); pending = pending.subarray(usable); }
+    }
+    if (pending.length >= 2) push(dec.process(pending.subarray(0, pending.length & ~1)));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** ElevenLabs: doğrudan ulaw_8000 akışı (telefon için optimize). */
+async function elevenLabsStream(text, lang, push) {
+  const voice = lang === 'en' ? (process.env.ELEVENLABS_VOICE_EN || '21m00Tcm4TlvDq8ikWAM') : (process.env.ELEVENLABS_VOICE_TR || 'EXAVITQu4vr4xnSDxMaL');
+  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}/stream?output_format=ulaw_8000&optimize_streaming_latency=3`, {
+    method: 'POST',
+    headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, model_id: process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5', language_code: lang, voice_settings: { stability: 0.5, similarity_boost: 0.8 } }),
+  });
+  if (!res.ok) throw new Error('ElevenLabs hatası ' + res.status + ' ' + (await res.text()));
+  const reader = res.body.getReader();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    pending = Buffer.concat([pending, Buffer.from(value)]);
-    while (pending.length >= CHUNK) {
-      const part = pending.subarray(0, CHUNK);
-      pending = pending.subarray(CHUNK);
-      const pcm = resample(part, OAI_RATE, config.rtp.sampleRate);
-      chunks.push(pcm);
-      onPcm(pcm);
-    }
+    push(ulawToPcm(Buffer.from(value)));
   }
-  if (pending.length >= 2) {
-    const pcm = resample(pending.subarray(0, pending.length & ~1), OAI_RATE, config.rtp.sampleRate);
-    chunks.push(pcm);
-    onPcm(pcm);
-  }
-  return Buffer.concat(chunks);
 }
 
 /** Seslendirme → PCM16 (Asterisk'e hazır), tamamı bir kerede. */
