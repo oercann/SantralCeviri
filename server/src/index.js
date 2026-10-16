@@ -60,6 +60,7 @@ ari.on('StasisStart', async (ev) => {
 });
 
 ari.on('ChannelDtmfReceived', (ev) => {
+  console.log('DTMF', ev.digit, 'kanal', ev.channel.id, 'durum', session?.state);
   if (session && ev.channel.id === session.user.channel.id) session.onDtmf(ev.digit);
 });
 
