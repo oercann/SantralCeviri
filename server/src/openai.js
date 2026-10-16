@@ -211,13 +211,13 @@ export async function prewarm(list) {
   console.log('Anonslar hazır:', ttsCache.size);
 }
 
-/** Sesli komutu yorumla → {action:'call'|'reply'|'hangup', number?, contact?, reply} */
-export async function intent(text, contacts) {
+/** Sesli komutu yorumla → {action:'call'|'reply'|'hangup', number?, reply}. history: önceki [{role,content}] */
+export async function intent(text, contacts, history = []) {
   const list = contacts.map((c) => `${c.name}: ${c.number}`).join('\n') || '(boş)';
-  const system = `Sen bir telefon asistanısın. Kullanıcı Türkçe konuşur. Görevin, söylediğini şu JSON'a çevirmek:
-{"action":"call","number":"+1XXXXXXXXXX"}  → bir numarayı veya rehberdeki kişiyi aramak istiyorsa (rehberden numarayı sen koy; ABD numaraları +1 ile)
-{"action":"hangup"}  → kapatmak istiyorsa
-{"action":"reply","reply":"..."}  → başka her durumda; kısa, samimi, Türkçe bir cevap ver. "Ne yapabilirim" derse seçenekleri 1 cümlede say: bir kişiyi veya numarayı aramak.
+  const system = `Sen Türkçe konuşan kişisel bir sesli asistansın (telefon üzerinden). Her cevabı şu JSON ile ver:
+{"action":"call","number":"+1XXXXXXXXXX"}  → kullanıcı bir numarayı veya rehberdeki kişiyi aramak istiyorsa (rehberden numarayı sen koy; ABD numaraları +1 ile)
+{"action":"hangup"}  → kapatmak / veda etmek istiyorsa
+{"action":"reply","reply":"..."}  → diğer her şey için: soruyu genel bilginle doğrudan ve doğru cevapla (tarih, matematik, çeviri, tavsiye, bilgi, günlük plan, her konu). Telefonda dinleneceği için en fazla 2-3 cümle, sade ve samimi. "Ne yapabilirsin" derse: arama yapabildiğini, canlı tercümanlık yaptığını ve her soruyu cevaplayabildiğini söyle. Canlı veri (hava durumu, haber, trafik) gerekiyorsa erişimin olmadığını kısaca söyle.
 Sadece JSON yaz.
 Rehber:
 ${list}`;
@@ -225,10 +225,10 @@ ${list}`;
     method: 'POST',
     headers: { Authorization: `Bearer ${config.openai.key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: config.openai.translate,
-      messages: [{ role: 'system', content: system }, { role: 'user', content: text }],
-      temperature: 0,
-      max_tokens: 150,
+      model: process.env.ASSISTANT_MODEL || config.openai.translate,
+      messages: [{ role: 'system', content: system }, ...history.slice(-8), { role: 'user', content: text }],
+      temperature: 0.3,
+      max_tokens: 250,
       response_format: { type: 'json_object' },
     }),
   });

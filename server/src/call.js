@@ -38,6 +38,7 @@ export class CallSession extends EventEmitter {
     this.remote = { name: 'remote', channel: null, lang: 'en', stt: null, snoop: null };
     this.main = { bridge: null, media: null, rtp: null }; // ortak köprü + tercüman sesi
     this.history = [];
+    this.assistantHistory = []; // Jarvis modu bağlamı
     this.state = 'init';
     this.dtmf = '';
     this.pendingTarget = null;
@@ -156,7 +157,7 @@ export class CallSession extends EventEmitter {
     if (this.busy) return;
     this.busy = true;
     try {
-      const r = await intent(text, allContacts());
+      const r = await intent(text, allContacts(), this.assistantHistory);
       this.log('Komut:', text, '→', JSON.stringify(r));
       if (r.action === 'call' && r.number) {
         const c = findByName(String(r.number));
@@ -164,6 +165,7 @@ export class CallSession extends EventEmitter {
       }
       if (r.action === 'hangup') { await this.say(PROMPTS.bye, 'tr'); return this.end('user-bye'); }
       const reply = r.reply || PROMPTS.notFound;
+      this.assistantHistory.push({ role: 'user', content: text }, { role: 'assistant', content: JSON.stringify(r) });
       this.emit('transcript', { speaker: 'assistant', type: 'final', text: reply });
       await this.say(reply, 'tr');
     } catch (e) {
