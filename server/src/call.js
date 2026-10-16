@@ -75,7 +75,7 @@ export class CallSession extends EventEmitter {
     // Bağlanmadan önce köprüde sadece user var → bu ses doğrudan user'ın sesi (asistan modu)
     this.user.stt = this.makeStt(this.user);
     this.main.rtp.on('audio', (pcm) => {
-      if (this.state === 'dialing-prompt' && this.user.stt) this.user.stt.feed(pcm);
+      if (this.state === 'dialing-prompt' && this.user.stt && Date.now() > (this.keypadUntil || 0)) this.user.stt.feed(pcm);
     });
   }
 
@@ -185,17 +185,23 @@ export class CallSession extends EventEmitter {
 
   onDtmf(digit) {
     if (!this.awaitDtmf) return;
+    this.keypadUntil = Date.now() + 5000; // tuşlama sürerken STT dinlemez
+    if (this.state === 'dialing-prompt') this.main.rtp.flush();
+    clearTimeout(this.dtmfTimer);
     if (digit === '#') {
       const d = this.dtmf; this.dtmf = '';
-      this.awaitDtmf(d);
-    } else if (digit === '*') {
-      this.dtmf = '';
-    } else {
-      this.dtmf += digit;
-      if (PIN && this.state === 'auth' && this.dtmf.length === PIN.length) {
-        const d = this.dtmf; this.dtmf = '';
-        this.awaitDtmf(d);
-      }
+      return this.awaitDtmf(d);
+    }
+    if (digit === '*') { this.dtmf = ''; return; }
+    this.dtmf += digit;
+    if (PIN && this.state === 'auth') {
+      if (this.dtmf.length === PIN.length) { const d = this.dtmf; this.dtmf = ''; this.awaitDtmf(d); }
+      return;
+    }
+    // Numara: 10 hane (veya 1 ile 11) tamamlanınca kısa bekleyip ara
+    const digits = this.dtmf.replace(/\D/g, '');
+    if (digits.length >= 10) {
+      this.dtmfTimer = setTimeout(() => { const d = this.dtmf; this.dtmf = ''; this.awaitDtmf?.(d); }, 1500);
     }
   }
 
