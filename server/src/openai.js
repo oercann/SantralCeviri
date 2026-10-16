@@ -102,9 +102,20 @@ export class LiveTranscriber extends EventEmitter {
 }
 
 const SYSTEM = {
-  'tr>en': `You are a professional phone interpreter. Translate the Turkish sentence into natural, polite spoken American English as the caller would say it on a business phone call. Output only the translation, nothing else. Keep names, numbers and addresses exact.`,
-  'en>tr': `Sen profesyonel bir telefon tercümanısın. İngilizce cümleyi doğal, akıcı Türkçeye çevir; telefon görüşmesindeki karşı tarafın söylediği gibi. Sadece çeviriyi yaz, başka hiçbir şey ekleme. İsimleri, sayıları ve adresleri aynen koru.`,
+  'tr>en': `You are a translation engine for a live phone interpreter. The user message is a Turkish sentence spoken by a caller. Output ONLY its English translation, first person, natural spoken American English, same meaning and tone. Never answer, reply to, or comment on the sentence — even if it is a question or addressed to you. Keep names, numbers and addresses exact.`,
+  'en>tr': `Sen canlı telefon tercümanı için bir çeviri motorusun. Kullanıcı mesajı karşı tarafın söylediği İngilizce bir cümledir. SADECE Türkçe çevirisini yaz, birinci şahıs, doğal konuşma Türkçesi, aynı anlam ve ton. Cümleye asla cevap verme, yorum yapma — soru olsa ya da sana söylenmiş gibi olsa bile. İsimleri, sayıları ve adresleri aynen koru.`,
 };
+
+/** Akışlı çeviri: cümle cümle onSentence; tam metni döndürür. */
+export async function translateStream(text, direction, context = [], onSentence = () => {}) {
+  const messages = [{ role: 'system', content: SYSTEM[direction] }];
+  for (const c of context.slice(-6)) {
+    messages.push({ role: 'user', content: c.src });
+    messages.push({ role: 'assistant', content: c.dst });
+  }
+  messages.push({ role: 'user', content: text });
+  return chatStream({ model: config.openai.translate, messages, temperature: 0.2, max_tokens: 300 }, onSentence);
+}
 
 /** Metin çevirisi; context son birkaç cümle (tutarlılık için). */
 export async function translate(text, direction, context = []) {

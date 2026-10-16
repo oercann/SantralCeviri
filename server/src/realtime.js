@@ -89,8 +89,7 @@ export class RealtimeSession extends EventEmitter {
         case 'input_audio_buffer.speech_started':
           this.emit('speech_started'); break;
         case 'input_audio_buffer.committed':
-          if (this.role === 'interpreter') this._interpretTurn();
-          break;
+          break; // tercüman: çeviri metin yoluyla yapılır (call.js), model konuşturulmaz
         case 'conversation.item.input_audio_transcription.completed':
           if (ev.transcript?.trim()) this.emit('heard', ev.transcript.trim()); break;
         case 'response.created':

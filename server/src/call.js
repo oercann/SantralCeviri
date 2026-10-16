@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { config, normalizeNumber } from './config.js';
 import { RtpLeg, allocPort } from './rtp.js';
-import { speakStream } from './openai.js';
+import { speakStream, translateStream } from './openai.js';
 import { RealtimeSession, ROLES, ASSISTANT_TOOLS, webSearch } from './realtime.js';
 import { allContacts, findByName } from './contacts.js';
 
@@ -131,6 +131,26 @@ export class CallSession extends EventEmitter {
     media.rtp.on('audio', (pcm) => { if (this.state === 'connected' && party.interp) party.interp.feed(pcm); });
   }
 
+  /** Tercüman: metne dök → çevir → seslendir (model asla sohbet edemez). */
+  pipeInterpreter(session, party) {
+    const direction = party === this.user ? 'tr>en' : 'en>tr';
+    const toLang = party === this.user ? 'en' : 'tr';
+    session.on('heard', async (text) => {
+      if (this.state !== 'connected') return;
+      this.emit('transcript', { speaker: party.name, type: 'final', text });
+      const t0 = Date.now();
+      try {
+        const ctx = this.history.filter((h) => h.direction === direction);
+        const full = await translateStream(text, direction, ctx, (sentence) => {
+          this.emit('transcript', { speaker: party.name, type: 'translated', text: sentence, original: text });
+          this.say(sentence, toLang);
+        });
+        this.history.push({ who: party.name, src: text, dst: full, direction });
+        this.log(`${party.name} ${direction} ${Date.now() - t0}ms:`, text, '⇒', full);
+      } catch (e) { this.log('Çeviri hatası', e.message); }
+    });
+  }
+
   /** Bir model oturumunun çıkışını kapıya bağla. */
   pipe(session, label) {
     let src = null;
@@ -243,9 +263,9 @@ export class CallSession extends EventEmitter {
     await this.setupSnoop(this.user);
     await this.setupSnoop(this.remote);
     this.user.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('Turkish', 'English'), label: 'TR→EN', src: 'Turkish', dst: 'English' });
-    this.pipe(this.user.interp, 'user');
+    this.pipeInterpreter(this.user.interp, this.user);
     this.remote.interp = new RealtimeSession({ role: 'interpreter', instructions: ROLES.interpreter('English', 'Turkish'), label: 'EN→TR', src: 'English', dst: 'Turkish' });
-    this.pipe(this.remote.interp, 'remote');
+    this.pipeInterpreter(this.remote.interp, this.remote);
     this.setState('connected');
     this.emit('status', { connected: true });
     await this.say(PROMPTS.remoteIntro, 'en');
